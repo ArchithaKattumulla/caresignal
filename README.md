@@ -32,3 +32,20 @@ streamlit run app.py
 ```
 
 ## Project Structure
+caresignal/
+├── app.py              # Streamlit dashboard
+├── outputs/            # Trained model and threshold
+├── data/               # Train and test splits
+└── notebooks/          # Day 1-3 analysis notebooks
+
+## Model Performance
+Trained on MIMIC-IV demo dataset (100 patients).
+- AUC-ROC: 0.511
+- AUC-PR: 0.212
+- Brier Score: 0.186
+
+Architecture designed to scale to full 500k admission dataset 
+upon PhysioNet credentialing approval.
+
+## Author
+Architha Kattumulla — Montclair State University, 2026
