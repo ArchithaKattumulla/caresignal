@@ -5,48 +5,61 @@ import joblib
 import shap
 import matplotlib.pyplot as plt
 import json
+import httpx
+import hashlib
+import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# ── Simple Login ──────────────────────────────────────────
-USERS = {
-    "nurse1"  : "nurse123",
-    "doctor1" : "doctor123",
+# ── Supabase config ───────────────────────────────────────
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
+HEADERS = {
+    "apikey"       : SUPABASE_KEY,
+    "Authorization": f"Bearer {SUPABASE_KEY}",
+    "Content-Type" : "application/json"
 }
 
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-if "username" not in st.session_state:
-    st.session_state.username = ""
+# ── Helper functions ──────────────────────────────────────
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
 
-if not st.session_state.logged_in:
-    st.title("🏥 CareSignal — Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
+def register_user(full_name, email, password, hospital, job_title, reason):
+    data = {
+        "full_name"    : full_name,
+        "email"        : email,
+        "password"     : hash_password(password),
+        "hospital_name": hospital,
+        "job_title"    : job_title,
+        "reason"       : reason,
+        "status"       : "pending"
+    }
+    r = httpx.post(f"{SUPABASE_URL}/rest/v1/users", json=data, headers=HEADERS)
+    return r.status_code == 201
 
-    if st.button("Login"):
-        if username in USERS and USERS[username] == password:
-            st.session_state.logged_in = True
-            st.session_state.username  = username
-            st.rerun()
-        else:
-            st.error("❌ Incorrect username or password")
-    st.stop()
+def login_user(email, password):
+    hashed = hash_password(password)
+    r = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/users",
+        params={"email": f"eq.{email}", "password": f"eq.{hashed}"},
+        headers=HEADERS
+    )
+    if r.status_code == 200 and len(r.json()) > 0:
+        return r.json()[0]
+    return None
 
-# ── Logged in ─────────────────────────────────────────────
-st.sidebar.write(f"👤 {st.session_state.username}")
-if st.sidebar.button("Logout"):
-    st.session_state.logged_in = False
-    st.rerun()
-
-# ── Load model ────────────────────────────────────────────
-import os
+# ── Model ─────────────────────────────────────────────────
 MODEL_PATH = os.path.join(os.path.dirname(__file__), 'outputs') + os.sep
-model      = joblib.load(MODEL_PATH + 'xgb_model.pkl')
-threshold  = joblib.load(MODEL_PATH + 'threshold.pkl')
 
-with open(MODEL_PATH + 'train_stats.json', 'r') as f:
-    train_stats = json.load(f)
+@st.cache_resource
+def load_model():
+    model     = joblib.load(MODEL_PATH + 'xgb_model.pkl')
+    threshold = joblib.load(MODEL_PATH + 'threshold.pkl')
+    with open(MODEL_PATH + 'train_stats.json', 'r') as f:
+        train_stats = json.load(f)
+    return model, threshold, train_stats
+
+model, threshold, train_stats = load_model()
 
 FEATURES = ['los', 'age', 'gender_male', 'high_risk_discharge',
             'prior_admissions', 'num_medications',
@@ -54,8 +67,8 @@ FEATURES = ['los', 'age', 'gender_male', 'high_risk_discharge',
 
 # ── Validation ────────────────────────────────────────────
 def validate(df):
-    errors  = []
-    warns   = []
+    errors = []
+    warns  = []
     missing = [f for f in FEATURES if f not in df.columns]
     if missing:
         errors.append(f"Missing columns: {missing}")
@@ -82,11 +95,10 @@ def detect_drift(df):
             })
     return drifted
 
-# ── Show patient results ──────────────────────────────────
+# ── Show patient ──────────────────────────────────────────
 def show_patient(patient_X, score, tier):
     st.metric("Risk Score", f"{score:.2f}", tier)
 
-    # SHAP
     st.subheader("Why is this patient flagged?")
     explainer   = shap.TreeExplainer(model)
     shap_values = explainer.shap_values(patient_X)
@@ -103,7 +115,6 @@ def show_patient(patient_X, score, tier):
     st.pyplot(fig)
     plt.close()
 
-    # what-if
     st.subheader("What-if simulator")
     new_los  = st.slider("Length of stay",  0, 30,  int(patient_X['los'].values[0]))
     new_meds = st.slider("Medications",     0, 200, int(patient_X['num_medications'].values[0]))
@@ -118,12 +129,82 @@ def show_patient(patient_X, score, tier):
     delta     = new_score - score
     st.metric("New risk score", f"{new_score:.2f}", f"{delta:+.2f}")
 
-# ── Title ─────────────────────────────────────────────────
+# ── Session state ─────────────────────────────────────────
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ── Auth pages ────────────────────────────────────────────
+if not st.session_state.logged_in:
+    st.title("🏥 CareSignal — Clinical Access Portal")
+    st.markdown("*30-Day Readmission Risk Prediction for Hospital Staff*")
+    st.divider()
+
+    tab_login, tab_register = st.tabs(["🔐 Login", "📝 Request Access"])
+
+    # LOGIN
+    with tab_login:
+        st.subheader("Login to your account")
+        email    = st.text_input("Email")
+        password = st.text_input("Password", type="password")
+
+        if st.button("Login"):
+            if email and password:
+                user = login_user(email, password)
+                if user is None:
+                    st.error("❌ Incorrect email or password")
+                elif user['status'] == 'pending':
+                    st.warning("⏳ Your account is pending approval. We will notify you within 24-48 hours.")
+                elif user['status'] == 'approved':
+                    st.session_state.logged_in = True
+                    st.session_state.user      = user
+                    st.rerun()
+            else:
+                st.warning("Please enter email and password")
+
+    # REGISTER
+    with tab_register:
+        st.subheader("Request access to CareSignal")
+        st.info("Access is restricted to verified hospital staff. Fill in the form below and we will review your application within 24-48 hours.")
+
+        full_name  = st.text_input("Full name")
+        email_reg  = st.text_input("Work email")
+        password1  = st.text_input("Create password", type="password")
+        password2  = st.text_input("Confirm password", type="password")
+        hospital   = st.text_input("Hospital name")
+        job_title  = st.text_input("Job title")
+        reason     = st.text_area("Why do you need access?")
+
+        if st.button("Submit application"):
+            if not all([full_name, email_reg, password1, hospital, job_title, reason]):
+                st.warning("Please fill in all fields")
+            elif password1 != password2:
+                st.error("Passwords do not match")
+            else:
+                success = register_user(full_name, email_reg, password1, hospital, job_title, reason)
+                if success:
+                    st.success("✅ Application submitted! We will review and approve within 24-48 hours.")
+                else:
+                    st.error("❌ Email already registered or error occurred")
+
+    st.stop()
+
+# ── Logged in ─────────────────────────────────────────────
+user = st.session_state.user
+st.sidebar.write(f"👤 {user['full_name']}")
+st.sidebar.write(f"🏥 {user['hospital_name']}")
+st.sidebar.write(f"💼 {user['job_title']}")
+if st.sidebar.button("Logout"):
+    st.session_state.logged_in = False
+    st.session_state.user      = None
+    st.rerun()
+
+# ── Main app ──────────────────────────────────────────────
 st.title("🏥 CareSignal — Readmission Risk")
 
 tab1, tab2 = st.tabs(["📤 Upload CSV", "👤 Single Patient"])
 
-# ── TAB 1: Upload CSV ─────────────────────────────────────
 with tab1:
     uploaded = st.file_uploader("Upload discharge CSV", type="csv")
 
@@ -151,19 +232,15 @@ with tab1:
         col2.metric("High risk",      (df['risk_tier'] == 'HIGH').sum())
         col3.metric("Avg risk score", f"{df['risk_score'].mean():.2f}")
 
-
-        # download report
         st.subheader("📥 Download risk report")
         report = df[['hadm_id', 'risk_score', 'risk_tier']].sort_values(
-        'risk_score', ascending=False)
+            'risk_score', ascending=False)
         st.download_button(
-          label     = "⬇ Download full risk report",
-          data      = report.to_csv(index=False),
-          file_name = "caresignal_risk_report.csv",
-          mime      = "text/csv"
+            label     = "⬇ Download full risk report",
+            data      = report.to_csv(index=False),
+            file_name = "caresignal_risk_report.csv",
+            mime      = "text/csv"
         )
-
-
 
         st.subheader("📋 All patients — sorted by risk")
         st.dataframe(
@@ -183,24 +260,23 @@ with tab1:
         tier      = patient['risk_tier']
         show_patient(patient_X, score, tier)
 
-        # download individual patient report
         st.subheader("📥 Download patient report")
         patient_report = pd.DataFrame([{
-    'hadm_id'   : patient_id,
-    'risk_score': score,
-    'risk_tier' : tier,
-    'los'       : patient['los'],
-    'age'       : patient['age'],
-    'prior_admissions'  : patient['prior_admissions'],
-    'num_medications'   : patient['num_medications'],
-    'num_diagnoses'     : patient['num_diagnoses'],
-    'num_abnormal_labs' : patient['num_abnormal_labs'],
-}])
+            'hadm_id'           : patient_id,
+            'risk_score'        : score,
+            'risk_tier'         : tier,
+            'los'               : patient['los'],
+            'age'               : patient['age'],
+            'prior_admissions'  : patient['prior_admissions'],
+            'num_medications'   : patient['num_medications'],
+            'num_diagnoses'     : patient['num_diagnoses'],
+            'num_abnormal_labs' : patient['num_abnormal_labs'],
+        }])
         st.download_button(
-          label     = f"⬇ Download report for patient {patient_id}",
-          data      = patient_report.to_csv(index=False),
-          file_name = f"patient_{patient_id}_report.csv",
-          mime      = "text/csv"
+            label     = f"⬇ Download report for patient {patient_id}",
+            data      = patient_report.to_csv(index=False),
+            file_name = f"patient_{patient_id}_report.csv",
+            mime      = "text/csv"
         )
 
     else:
@@ -213,7 +289,6 @@ with tab1:
             mime      = "text/csv"
         )
 
-# ── TAB 2: Single Patient ─────────────────────────────────
 with tab2:
     st.subheader("Enter patient details manually")
 
