@@ -49,7 +49,7 @@ def login_user(email, password):
     return None
 
 # ── Model ─────────────────────────────────────────────────
-MODEL_PATH = os.path.join(os.path.dirname(__file__), 'outputs') + os.sep
+MODEL_PATH = os.path.join(os.path.dirname(__file__), 'Outputs') + os.sep
 
 @st.cache_resource
 def load_model():
