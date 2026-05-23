@@ -26,17 +26,21 @@ teams identify high-risk patients before they leave the hospital.
 - **Deployment** — ngrok
 
 ## How to Run
+
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
 ## Project Structure
+
+```
 caresignal/
-├── app.py              # Streamlit dashboard
-├── outputs/            # Trained model and threshold
-├── data/               # Train and test splits
-└── notebooks/          # Day 1-3 analysis notebooks
+├── app.py              
+├── outputs/            
+├── data/               
+└── notebooks/          
+```
 
 ## Model Performance
 Trained on MIMIC-IV demo dataset (100 patients).
