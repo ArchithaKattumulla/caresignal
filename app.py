@@ -117,7 +117,7 @@ def show_patient(patient_X, score, tier):
     plt.close()
 
     st.subheader("What-if intervention simulator")
-    st.markdown("Adjust sliders to simulate care changes and see how risk score changes.")
+    st.markdown("Adjust sliders to simulate care changes.")
     new_los  = st.slider("Length of stay (days)", 0, 30,  int(patient_X['los'].values[0]))
     new_meds = st.slider("Number of medications", 0, 200, int(patient_X['num_medications'].values[0]))
     new_labs = st.slider("Abnormal lab count",    0, 500, int(patient_X['num_abnormal_labs'].values[0]))
@@ -131,8 +131,8 @@ def show_patient(patient_X, score, tier):
     delta     = new_score - score
 
     col1, col2 = st.columns(2)
-    col1.metric("Original risk score",   f"{score:.2f}")
-    col2.metric("Projected risk score",  f"{new_score:.2f}", f"{delta:+.2f}")
+    col1.metric("Original risk score",  f"{score:.2f}")
+    col2.metric("Projected risk score", f"{new_score:.2f}", f"{delta:+.2f}")
 
     if delta < -0.05:
         pct = abs(delta / score) * 100
@@ -191,7 +191,10 @@ if not st.session_state.logged_in:
             elif password1 != password2:
                 st.error("Passwords do not match")
             else:
-                success = register_user(full_name, email_reg, password1, hospital, job_title, reason)
+                success = register_user(
+                    full_name, email_reg, password1,
+                    hospital, job_title, reason
+                )
                 if success:
                     st.success("✅ Application submitted! We will review and approve within 24-48 hours.")
                 else:
@@ -239,7 +242,7 @@ with tab1:
 
         drifted = detect_drift(df)
         if drifted:
-            st.warning("⚠️ Distribution drift detected — this hospital's data differs from training data. Predictions may be less reliable. Use Patient Risk Explainer tab for individual analysis.")
+            st.warning("⚠️ Distribution drift detected — predictions may be less reliable.")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Total patients", len(df))
@@ -283,36 +286,36 @@ with tab2:
     else:
         df = st.session_state['scored_df']
 
-        st.subheader("Select a patient to explain")
-        patient_id = st.selectbox(
-            "Patient Admission ID",
-            df['hadm_id'].astype(str).tolist()
-        )
-        patient   = df[df['hadm_id'].astype(str) == patient_id].iloc[0]
-        patient_X = pd.DataFrame([patient[FEATURES]], columns=FEATURES)
-        score     = patient['risk_score']
-        tier      = patient['risk_tier']
+        options    = ["— Select a patient —"] + df['hadm_id'].astype(str).tolist()
+        patient_id = st.selectbox("Patient Admission ID", options)
 
-        show_patient(patient_X, score, tier)
+        if patient_id == "— Select a patient —":
+            st.info("Select a patient ID from the dropdown above to see their risk explanation.")
+        else:
+            patient   = df[df['hadm_id'].astype(str) == patient_id].iloc[0]
+            patient_X = pd.DataFrame([patient[FEATURES]], columns=FEATURES)
+            score     = patient['risk_score']
+            tier      = patient['risk_tier']
 
-        st.divider()
-        st.subheader("📥 Download patient report")
-        st.download_button(
-            label     = f"⬇ Download report for patient {patient_id}",
-            data      = pd.DataFrame([{
-                'hadm_id'          : patient_id,
-                'risk_score'       : score,
-                'risk_tier'        : tier,
-                'los'              : patient['los'],
-                'age'              : patient['age'],
-                'prior_admissions' : patient['prior_admissions'],
-                'num_medications'  : patient['num_medications'],
-                'num_diagnoses'    : patient['num_diagnoses'],
-                'num_abnormal_labs': patient['num_abnormal_labs'],
-            }]).to_csv(index=False),
-            file_name = f"patient_{patient_id}_report.csv",
-            mime      = "text/csv"
-        )
+            show_patient(patient_X, score, tier)
+
+            st.divider()
+            st.download_button(
+                label     = f"⬇ Download report for patient {patient_id}",
+                data      = pd.DataFrame([{
+                    'hadm_id'          : patient_id,
+                    'risk_score'       : score,
+                    'risk_tier'        : tier,
+                    'los'              : patient['los'],
+                    'age'              : patient['age'],
+                    'prior_admissions' : patient['prior_admissions'],
+                    'num_medications'  : patient['num_medications'],
+                    'num_diagnoses'    : patient['num_diagnoses'],
+                    'num_abnormal_labs': patient['num_abnormal_labs'],
+                }]).to_csv(index=False),
+                file_name = f"patient_{patient_id}_report.csv",
+                mime      = "text/csv"
+            )
 
 # ── TAB 3: New Patient Assessment ─────────────────────────
 with tab3:
@@ -323,8 +326,8 @@ with tab3:
     with col1:
         age    = st.number_input("Age",                     0, 100, 0)
         los    = st.number_input("Length of stay (days)",   0, 60,  0)
-        gender = st.selectbox("Gender", ["Male", "Female"])
-        dc     = st.selectbox("Discharge to", ["Home", "SNF / Rehab"])
+        gender = st.selectbox("Gender", ["— Select —", "Male", "Female"])
+        dc     = st.selectbox("Discharge to", ["— Select —", "Home", "SNF / Rehab"])
     with col2:
         prior  = st.number_input("Prior admissions (12mo)", 0, 20,  0)
         meds   = st.number_input("Number of medications",   0, 300, 0)
@@ -332,38 +335,40 @@ with tab3:
         labs   = st.number_input("Abnormal lab count",      0, 500, 0)
 
     if st.button("🔍 Get risk score"):
-        patient_X = pd.DataFrame([{
-            'los'                : los,
-            'age'                : age,
-            'gender_male'        : 1 if gender == "Male" else 0,
-            'high_risk_discharge': 1 if "SNF" in dc else 0,
-            'prior_admissions'   : prior,
-            'num_medications'    : meds,
-            'num_diagnoses'      : diags,
-            'num_abnormal_labs'  : labs
-        }], columns=FEATURES)
-
-        score = model.predict_proba(patient_X)[:, 1][0]
-        tier  = 'HIGH' if score >= threshold else 'LOW'
-
-        show_patient(patient_X, score, tier)
-
-        st.divider()
-        st.subheader("📥 Download assessment report")
-        st.download_button(
-            label     = "⬇ Download patient assessment",
-            data      = pd.DataFrame([{
-                'risk_score'         : score,
-                'risk_tier'          : tier,
-                'age'                : age,
+        if gender == "— Select —" or dc == "— Select —":
+            st.warning("Please select gender and discharge destination")
+        else:
+            patient_X = pd.DataFrame([{
                 'los'                : los,
+                'age'                : age,
+                'gender_male'        : 1 if gender == "Male" else 0,
+                'high_risk_discharge': 1 if "SNF" in dc else 0,
                 'prior_admissions'   : prior,
                 'num_medications'    : meds,
                 'num_diagnoses'      : diags,
-                'num_abnormal_labs'  : labs,
-                'gender_male'        : 1 if gender == "Male" else 0,
-                'high_risk_discharge': 1 if "SNF" in dc else 0,
-            }]).to_csv(index=False),
-            file_name = "patient_assessment.csv",
-            mime      = "text/csv"
-        )
+                'num_abnormal_labs'  : labs
+            }], columns=FEATURES)
+
+            score = model.predict_proba(patient_X)[:, 1][0]
+            tier  = 'HIGH' if score >= threshold else 'LOW'
+
+            show_patient(patient_X, score, tier)
+
+            st.divider()
+            st.download_button(
+                label     = "⬇ Download patient assessment",
+                data      = pd.DataFrame([{
+                    'risk_score'         : score,
+                    'risk_tier'          : tier,
+                    'age'                : age,
+                    'los'                : los,
+                    'prior_admissions'   : prior,
+                    'num_medications'    : meds,
+                    'num_diagnoses'      : diags,
+                    'num_abnormal_labs'  : labs,
+                    'gender_male'        : 1 if gender == "Male" else 0,
+                    'high_risk_discharge': 1 if "SNF" in dc else 0,
+                }]).to_csv(index=False),
+                file_name = "patient_assessment.csv",
+                mime      = "text/csv"
+            )
