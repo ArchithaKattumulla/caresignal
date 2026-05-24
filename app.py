@@ -97,7 +97,8 @@ def detect_drift(df):
 
 # ── Show patient ──────────────────────────────────────────
 def show_patient(patient_X, score, tier):
-    st.metric("Risk Score", f"{score:.2f}", tier)
+    color = "🔴" if tier == 'HIGH' else "🟢"
+    st.markdown(f"### {color} Risk Score: `{score:.2f}` — **{tier} RISK**")
 
     st.subheader("Why is this patient flagged?")
     explainer   = shap.TreeExplainer(model)
@@ -115,10 +116,11 @@ def show_patient(patient_X, score, tier):
     st.pyplot(fig)
     plt.close()
 
-    st.subheader("What-if simulator")
-    new_los  = st.slider("Length of stay",  0, 30,  int(patient_X['los'].values[0]))
-    new_meds = st.slider("Medications",     0, 200, int(patient_X['num_medications'].values[0]))
-    new_labs = st.slider("Abnormal labs",   0, 500, int(patient_X['num_abnormal_labs'].values[0]))
+    st.subheader("What-if intervention simulator")
+    st.markdown("Adjust sliders to simulate care changes and see how risk score changes.")
+    new_los  = st.slider("Length of stay (days)", 0, 30,  int(patient_X['los'].values[0]))
+    new_meds = st.slider("Number of medications", 0, 200, int(patient_X['num_medications'].values[0]))
+    new_labs = st.slider("Abnormal lab count",    0, 500, int(patient_X['num_abnormal_labs'].values[0]))
 
     modified = patient_X.copy()
     modified['los']               = new_los
@@ -127,7 +129,16 @@ def show_patient(patient_X, score, tier):
 
     new_score = model.predict_proba(modified)[:, 1][0]
     delta     = new_score - score
-    st.metric("New risk score", f"{new_score:.2f}", f"{delta:+.2f}")
+
+    col1, col2 = st.columns(2)
+    col1.metric("Original risk score",   f"{score:.2f}")
+    col2.metric("Projected risk score",  f"{new_score:.2f}", f"{delta:+.2f}")
+
+    if delta < -0.05:
+        pct = abs(delta / score) * 100
+        st.success(f"✅ {pct:.0f}% risk reduction from interventions")
+    elif delta > 0.05:
+        st.error("⚠️ Risk increased — reconsider interventions")
 
 # ── Session state ─────────────────────────────────────────
 if "logged_in" not in st.session_state:
@@ -138,12 +149,11 @@ if "user" not in st.session_state:
 # ── Auth pages ────────────────────────────────────────────
 if not st.session_state.logged_in:
     st.title("🏥 CareSignal — Clinical Access Portal")
-    st.markdown("*30-Day Readmission Risk Prediction for Hospital Staff*")
+    st.markdown("*30-Day Readmission Risk Prediction for Verified Hospital Staff*")
     st.divider()
 
     tab_login, tab_register = st.tabs(["🔐 Login", "📝 Request Access"])
 
-    # LOGIN
     with tab_login:
         st.subheader("Login to your account")
         email    = st.text_input("Email")
@@ -163,7 +173,6 @@ if not st.session_state.logged_in:
             else:
                 st.warning("Please enter email and password")
 
-    # REGISTER
     with tab_register:
         st.subheader("Request access to CareSignal")
         st.info("Access is restricted to verified hospital staff. Fill in the form below and we will review your application within 24-48 hours.")
@@ -203,8 +212,13 @@ if st.sidebar.button("Logout"):
 # ── Main app ──────────────────────────────────────────────
 st.title("🏥 CareSignal — Readmission Risk")
 
-tab1, tab2 = st.tabs(["📤 Upload CSV", "👤 Single Patient"])
+tab1, tab2, tab3 = st.tabs([
+    "📤 Upload & Score",
+    "🔍 Patient Risk Explainer",
+    "➕ New Patient Assessment"
+])
 
+# ── TAB 1: Upload & Score ─────────────────────────────────
 with tab1:
     uploaded = st.file_uploader("Upload discharge CSV", type="csv")
 
@@ -220,27 +234,17 @@ with tab1:
         df['risk_score'] = model.predict_proba(df[FEATURES])[:, 1]
         df['risk_tier']  = df['risk_score'].apply(
             lambda x: 'HIGH' if x >= threshold else 'LOW')
+        st.session_state['scored_df'] = df
         st.success(f"✅ {len(df)} patients scored")
 
         drifted = detect_drift(df)
         if drifted:
-            st.warning("⚠️ Drift detected — predictions may be less reliable")
-            st.dataframe(pd.DataFrame(drifted))
+            st.warning("⚠️ Distribution drift detected — this hospital's data differs from training data. Predictions may be less reliable. Use Patient Risk Explainer tab for individual analysis.")
 
         col1, col2, col3 = st.columns(3)
         col1.metric("Total patients", len(df))
         col2.metric("High risk",      (df['risk_tier'] == 'HIGH').sum())
         col3.metric("Avg risk score", f"{df['risk_score'].mean():.2f}")
-
-        st.subheader("📥 Download risk report")
-        report = df[['hadm_id', 'risk_score', 'risk_tier']].sort_values(
-            'risk_score', ascending=False)
-        st.download_button(
-            label     = "⬇ Download full risk report",
-            data      = report.to_csv(index=False),
-            file_name = "caresignal_risk_report.csv",
-            mime      = "text/csv"
-        )
 
         st.subheader("📋 All patients — sorted by risk")
         st.dataframe(
@@ -248,39 +252,22 @@ with tab1:
                 'risk_score', ascending=False),
             use_container_width=True
         )
-        st.divider()
 
-        patient_id = st.selectbox(
-            "Select patient by Admission ID",
-            df['hadm_id'].astype(str).tolist()
-        )
-        patient   = df[df['hadm_id'].astype(str) == patient_id].iloc[0]
-        patient_X = pd.DataFrame([patient[FEATURES]], columns=FEATURES)
-        score     = patient['risk_score']
-        tier      = patient['risk_tier']
-        show_patient(patient_X, score, tier)
-
-        st.subheader("📥 Download patient report")
-        patient_report = pd.DataFrame([{
-            'hadm_id'           : patient_id,
-            'risk_score'        : score,
-            'risk_tier'         : tier,
-            'los'               : patient['los'],
-            'age'               : patient['age'],
-            'prior_admissions'  : patient['prior_admissions'],
-            'num_medications'   : patient['num_medications'],
-            'num_diagnoses'     : patient['num_diagnoses'],
-            'num_abnormal_labs' : patient['num_abnormal_labs'],
-        }])
         st.download_button(
-            label     = f"⬇ Download report for patient {patient_id}",
-            data      = patient_report.to_csv(index=False),
-            file_name = f"patient_{patient_id}_report.csv",
+            label     = "⬇ Download full risk report",
+            data      = df[['hadm_id', 'risk_score', 'risk_tier']].sort_values(
+                'risk_score', ascending=False).to_csv(index=False),
+            file_name = "caresignal_risk_report.csv",
             mime      = "text/csv"
         )
 
     else:
         st.info("👆 Upload a discharge CSV to get started")
+        st.markdown("""
+        **Required columns:**
+        `los` · `age` · `gender_male` · `high_risk_discharge` ·
+        `prior_admissions` · `num_medications` · `num_diagnoses` · `num_abnormal_labs`
+        """)
         template = pd.DataFrame(columns=FEATURES)
         st.download_button(
             label     = "📥 Download template CSV",
@@ -289,20 +276,60 @@ with tab1:
             mime      = "text/csv"
         )
 
+# ── TAB 2: Patient Risk Explainer ─────────────────────────
 with tab2:
-    st.subheader("Enter patient details manually")
+    if 'scored_df' not in st.session_state:
+        st.info("👆 Upload a CSV in the Upload & Score tab first")
+    else:
+        df = st.session_state['scored_df']
+
+        st.subheader("Select a patient to explain")
+        patient_id = st.selectbox(
+            "Patient Admission ID",
+            df['hadm_id'].astype(str).tolist()
+        )
+        patient   = df[df['hadm_id'].astype(str) == patient_id].iloc[0]
+        patient_X = pd.DataFrame([patient[FEATURES]], columns=FEATURES)
+        score     = patient['risk_score']
+        tier      = patient['risk_tier']
+
+        show_patient(patient_X, score, tier)
+
+        st.divider()
+        st.subheader("📥 Download patient report")
+        st.download_button(
+            label     = f"⬇ Download report for patient {patient_id}",
+            data      = pd.DataFrame([{
+                'hadm_id'          : patient_id,
+                'risk_score'       : score,
+                'risk_tier'        : tier,
+                'los'              : patient['los'],
+                'age'              : patient['age'],
+                'prior_admissions' : patient['prior_admissions'],
+                'num_medications'  : patient['num_medications'],
+                'num_diagnoses'    : patient['num_diagnoses'],
+                'num_abnormal_labs': patient['num_abnormal_labs'],
+            }]).to_csv(index=False),
+            file_name = f"patient_{patient_id}_report.csv",
+            mime      = "text/csv"
+        )
+
+# ── TAB 3: New Patient Assessment ─────────────────────────
+with tab3:
+    st.subheader("Assess a new patient manually")
+    st.markdown("Enter patient details below to get an instant readmission risk score.")
 
     col1, col2 = st.columns(2)
     with col1:
-        age    = st.number_input("Age",                    10, 100, 65)
-        los    = st.number_input("Length of stay (days)",  0,  60,  5)
+        age    = st.number_input("Age",                     0, 100, 0)
+        los    = st.number_input("Length of stay (days)",   0, 60,  0)
         gender = st.selectbox("Gender", ["Male", "Female"])
         dc     = st.selectbox("Discharge to", ["Home", "SNF / Rehab"])
     with col2:
         prior  = st.number_input("Prior admissions (12mo)", 0, 20,  0)
-        meds   = st.number_input("Number of medications",   0, 300, 10)
-        diags  = st.number_input("Number of diagnoses",     0, 50,  5)
-        labs   = st.number_input("Abnormal lab count",      0, 500, 20)
+        meds   = st.number_input("Number of medications",   0, 300, 0)
+        diags  = st.number_input("Number of diagnoses",     0, 50,  0)
+        labs   = st.number_input("Abnormal lab count",      0, 500, 0)
 
     if st.button("🔍 Get risk score"):
         patient_X = pd.DataFrame([{
@@ -318,4 +345,25 @@ with tab2:
 
         score = model.predict_proba(patient_X)[:, 1][0]
         tier  = 'HIGH' if score >= threshold else 'LOW'
+
         show_patient(patient_X, score, tier)
+
+        st.divider()
+        st.subheader("📥 Download assessment report")
+        st.download_button(
+            label     = "⬇ Download patient assessment",
+            data      = pd.DataFrame([{
+                'risk_score'         : score,
+                'risk_tier'          : tier,
+                'age'                : age,
+                'los'                : los,
+                'prior_admissions'   : prior,
+                'num_medications'    : meds,
+                'num_diagnoses'      : diags,
+                'num_abnormal_labs'  : labs,
+                'gender_male'        : 1 if gender == "Male" else 0,
+                'high_risk_discharge': 1 if "SNF" in dc else 0,
+            }]).to_csv(index=False),
+            file_name = "patient_assessment.csv",
+            mime      = "text/csv"
+        )
