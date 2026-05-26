@@ -20,7 +20,56 @@ HEADERS = {
     "Content-Type" : "application/json"
 }
 
-# ── Helper functions ──────────────────────────────────────
+# ── Email config ──────────────────────────────────────────
+RESEND_API_KEY = st.secrets["RESEND_API_KEY"]
+ADMIN_EMAIL    = st.secrets["ADMIN_EMAIL"]
+
+# ── Email functions ───────────────────────────────────────
+def send_email(to, subject, html):
+    httpx.post(
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_API_KEY}",
+            "Content-Type" : "application/json"
+        },
+        json={
+            "from"   : "CareSignal <onboarding@resend.dev>",
+            "to"     : [to],
+            "subject": subject,
+            "html"   : html
+        }
+    )
+
+def notify_registration(full_name, email, hospital, job_title, reason):
+    send_email(
+        to      = email,
+        subject = "CareSignal — Application Received",
+        html    = f"""
+        <h2>Thank you for applying, {full_name}!</h2>
+        <p>We have received your application for access to CareSignal.</p>
+        <p>We will review your application within <strong>24-48 hours</strong>.</p>
+        <br>
+        <p><b>Your details:</b></p>
+        <p>Hospital: {hospital}</p>
+        <p>Job title: {job_title}</p>
+        <br>
+        <p>The CareSignal Team</p>
+        """
+    )
+    send_email(
+        to      = ADMIN_EMAIL,
+        subject = "New CareSignal Access Request",
+        html    = f"""
+        <h2>New registration received</h2>
+        <p><b>Name:</b> {full_name}</p>
+        <p><b>Email:</b> {email}</p>
+        <p><b>Hospital:</b> {hospital}</p>
+        <p><b>Job title:</b> {job_title}</p>
+        <p><b>Reason:</b> {reason}</p>
+        """
+    )
+
+# ── Auth helper functions ─────────────────────────────────
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -196,7 +245,11 @@ if not st.session_state.logged_in:
                     hospital, job_title, reason
                 )
                 if success:
-                    st.success("✅ Application submitted! We will review and approve within 24-48 hours.")
+                    notify_registration(
+                        full_name, email_reg,
+                        hospital, job_title, reason
+                    )
+                    st.success("✅ Application submitted! Check your email for confirmation. We will review within 24-48 hours.")
                 else:
                     st.error("❌ Email already registered or error occurred")
 
@@ -290,7 +343,7 @@ with tab2:
         patient_id = st.selectbox("Patient Admission ID", options)
 
         if patient_id == "— Select a patient —":
-            st.info("Select a patient ID from the dropdown above to see their risk explanation.")
+            st.info("Select a patient ID from the dropdown above.")
         else:
             patient   = df[df['hadm_id'].astype(str) == patient_id].iloc[0]
             patient_X = pd.DataFrame([patient[FEATURES]], columns=FEATURES)
