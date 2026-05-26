@@ -52,7 +52,8 @@ def notify_admin(full_name, email, hospital, job_title, reason):
         <p><b>Job title:</b> {job_title}</p>
         <p><b>Reason:</b> {reason}</p>
         <br>
-        <p>Log in to Supabase to approve this user.</p>
+        <p>Log in to approve: caresignal.streamlit.app</p>
+        <p>Username: admin</p>
         """
     )
 
@@ -181,9 +182,11 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
     st.session_state.user = None
+if "admin_logged_in" not in st.session_state:
+    st.session_state.admin_logged_in = False
 
 # ── Auth pages ────────────────────────────────────────────
-if not st.session_state.logged_in:
+if not st.session_state.logged_in and not st.session_state.admin_logged_in:
     st.title("🏥 CareSignal — Clinical Access Portal")
     st.markdown("*30-Day Readmission Risk Prediction for Verified Hospital Staff*")
     st.divider()
@@ -197,15 +200,21 @@ if not st.session_state.logged_in:
 
         if st.button("Login"):
             if email and password:
-                user = login_user(email, password)
-                if user is None:
-                    st.error("❌ Incorrect email or password")
-                elif user['status'] == 'pending':
-                    st.warning("⏳ Your account is pending approval. We will notify you within 24-48 hours.")
-                elif user['status'] == 'approved':
-                    st.session_state.logged_in = True
-                    st.session_state.user      = user
+                if email == "admin" and password == st.secrets["ADMIN_PASSWORD"]:
+                    st.session_state.admin_logged_in = True
                     st.rerun()
+                else:
+                    user = login_user(email, password)
+                    if user is None:
+                        st.error("❌ Incorrect email or password")
+                    elif user['status'] == 'pending':
+                        st.warning("⏳ Your account is pending approval. We will notify you within 24-48 hours.")
+                    elif user['status'] == 'rejected':
+                        st.error("❌ Your application was not approved.")
+                    elif user['status'] == 'approved':
+                        st.session_state.logged_in = True
+                        st.session_state.user      = user
+                        st.rerun()
             else:
                 st.warning("Please enter email and password")
 
@@ -239,6 +248,85 @@ if not st.session_state.logged_in:
                     st.success("✅ Application submitted! We will review and approve within 24-48 hours.")
                 else:
                     st.error("❌ Email already registered or error occurred")
+
+    st.stop()
+
+# ── Admin dashboard ───────────────────────────────────────
+if st.session_state.admin_logged_in:
+    st.title("🔐 CareSignal — Admin Dashboard")
+    st.sidebar.write("👤 Admin")
+    if st.sidebar.button("Logout"):
+        st.session_state.admin_logged_in = False
+        st.rerun()
+
+    r = httpx.get(
+        f"{SUPABASE_URL}/rest/v1/users",
+        params={"order": "created_at.desc"},
+        headers=HEADERS
+    )
+    users = r.json()
+
+    pending  = [u for u in users if u['status'] == 'pending']
+    approved = [u for u in users if u['status'] == 'approved']
+    rejected = [u for u in users if u['status'] == 'rejected']
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Pending",  len(pending))
+    col2.metric("Approved", len(approved))
+    col3.metric("Rejected", len(rejected))
+
+    st.divider()
+
+    st.subheader(f"⏳ Pending Applications ({len(pending)})")
+    if len(pending) == 0:
+        st.info("No pending applications")
+    else:
+        for u in pending:
+            with st.expander(f"{u['full_name']} — {u['hospital_name']} — {u['job_title']}"):
+                st.write(f"**Email:** {u['email']}")
+                st.write(f"**Hospital:** {u['hospital_name']}")
+                st.write(f"**Job title:** {u['job_title']}")
+                st.write(f"**Reason:** {u['reason']}")
+                st.write(f"**Applied:** {u['created_at'][:10]}")
+
+                col1, col2 = st.columns(2)
+                if col1.button("✅ Approve", key=f"approve_{u['id']}"):
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/users",
+                        params={"id": f"eq.{u['id']}"},
+                        json={"status": "approved"},
+                        headers=HEADERS
+                    )
+                    st.success(f"✅ {u['full_name']} approved")
+                    st.rerun()
+
+                if col2.button("❌ Reject", key=f"reject_{u['id']}"):
+                    httpx.patch(
+                        f"{SUPABASE_URL}/rest/v1/users",
+                        params={"id": f"eq.{u['id']}"},
+                        json={"status": "rejected"},
+                        headers=HEADERS
+                    )
+                    st.warning(f"❌ {u['full_name']} rejected")
+                    st.rerun()
+
+    st.divider()
+
+    st.subheader(f"✅ Approved Users ({len(approved)})")
+    if approved:
+        st.dataframe(
+            pd.DataFrame(approved)[['full_name', 'email', 'hospital_name', 'job_title', 'created_at']],
+            use_container_width=True
+        )
+
+    st.divider()
+
+    st.subheader(f"❌ Rejected Applications ({len(rejected)})")
+    if rejected:
+        st.dataframe(
+            pd.DataFrame(rejected)[['full_name', 'email', 'hospital_name', 'job_title', 'created_at']],
+            use_container_width=True
+        )
 
     st.stop()
 
